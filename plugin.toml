@@ -1,0 +1,13 @@
+schema = "animus.plugin.v1"
+name = "animus-provider-codex"
+version = "0.1.0"
+plugin_kind = "provider"
+description = "OpenAI Codex CLI provider plugin"
+
+[capabilities]
+streaming = true
+progress = true
+cancellation = true
+
+[binary]
+default = "animus-provider-codex"
