@@ -6,8 +6,8 @@ use std::time::Instant;
 
 use animus_plugin_protocol::{HealthCheckResult, HealthStatus};
 use animus_provider_protocol::{
-    AgentResumeRequest, AgentRunRequest, AgentRunResponse, BackendError, ProviderBackend,
-    ProviderCapabilities, ProviderManifest,
+    AgentNotification, AgentResumeRequest, AgentRunRequest, AgentRunResponse, BackendError,
+    NotificationSink, ProviderBackend, ProviderCapabilities, ProviderManifest,
 };
 use animus_session_backend::{
     lookup_binary_in_path, CodexSessionBackend, SessionBackend, SessionEvent, SessionRequest,
@@ -115,6 +115,15 @@ impl ProviderBackend for CodexProviderBackend {
     }
 
     async fn run_agent(&self, request: AgentRunRequest) -> Result<AgentRunResponse, BackendError> {
+        self.run_agent_streaming(request, NotificationSink::noop())
+            .await
+    }
+
+    async fn run_agent_streaming(
+        &self,
+        request: AgentRunRequest,
+        sink: NotificationSink,
+    ) -> Result<AgentRunResponse, BackendError> {
         let started = Instant::now();
         let session_request = self.build_session_request(&request);
         let model_label = session_request.model.clone();
@@ -125,12 +134,21 @@ impl ProviderBackend for CodexProviderBackend {
             .await
             .map_err(map_session_error)?;
 
-        Ok(drain_session(run, started, model_label).await)
+        Ok(drain_session(run, started, model_label, sink).await)
     }
 
     async fn resume_agent(
         &self,
         request: AgentResumeRequest,
+    ) -> Result<AgentRunResponse, BackendError> {
+        self.resume_agent_streaming(request, NotificationSink::noop())
+            .await
+    }
+
+    async fn resume_agent_streaming(
+        &self,
+        request: AgentResumeRequest,
+        sink: NotificationSink,
     ) -> Result<AgentRunResponse, BackendError> {
         let session_id = request.session_id.clone().ok_or_else(|| {
             BackendError::Other(anyhow::anyhow!(
@@ -147,7 +165,7 @@ impl ProviderBackend for CodexProviderBackend {
             .await
             .map_err(map_session_error)?;
 
-        Ok(drain_session(run, started, model_label).await)
+        Ok(drain_session(run, started, model_label, sink).await)
     }
 
     async fn cancel_agent(&self, session_id: &str) -> Result<(), BackendError> {
@@ -200,6 +218,7 @@ async fn drain_session(
     mut run: SessionRun,
     started: Instant,
     model_label: String,
+    sink: NotificationSink,
 ) -> AgentRunResponse {
     let selected_backend = run.selected_backend.clone();
     let mut session_id = run.session_id.clone();
@@ -213,19 +232,31 @@ async fn drain_session(
     let mut exit_code: i32 = 0;
 
     while let Some(event) = run.events.recv().await {
+        let sid = session_id.clone().unwrap_or_default();
         match event {
             SessionEvent::Started {
-                session_id: sid, ..
+                session_id: started_sid,
+                ..
             } => {
                 if session_id.is_none() {
-                    session_id = sid;
+                    session_id = started_sid;
                 }
             }
             SessionEvent::TextDelta { text } => {
                 output.push_str(&text);
+                sink.emit(AgentNotification::Output {
+                    session_id: sid,
+                    text,
+                    is_final: false,
+                });
             }
             SessionEvent::FinalText { text } => {
-                final_text = Some(text);
+                final_text = Some(text.clone());
+                sink.emit(AgentNotification::Output {
+                    session_id: sid,
+                    text,
+                    is_final: true,
+                });
             }
             SessionEvent::ToolCall {
                 tool_name,
@@ -237,6 +268,12 @@ async fn drain_session(
                     "arguments": arguments,
                     "server": server,
                 }));
+                sink.emit(AgentNotification::ToolCall {
+                    session_id: sid,
+                    name: tool_name,
+                    arguments,
+                    server,
+                });
             }
             SessionEvent::ToolResult {
                 tool_name,
@@ -248,9 +285,19 @@ async fn drain_session(
                     "output": tool_output,
                     "success": success,
                 }));
+                sink.emit(AgentNotification::ToolResult {
+                    session_id: sid,
+                    name: tool_name,
+                    output: tool_output,
+                    success,
+                });
             }
             SessionEvent::Thinking { text } => {
-                thinking.push(text);
+                thinking.push(text.clone());
+                sink.emit(AgentNotification::Thinking {
+                    session_id: sid,
+                    text,
+                });
             }
             SessionEvent::Artifact {
                 artifact_id,
@@ -268,10 +315,15 @@ async fn drain_session(
                 message,
                 recoverable,
             } => {
-                errors.push(message);
+                errors.push(message.clone());
                 if !recoverable {
                     exit_code = 1;
                 }
+                sink.emit(AgentNotification::Error {
+                    session_id: sid,
+                    message,
+                    recoverable,
+                });
             }
             SessionEvent::Finished { exit_code: code } => {
                 if let Some(c) = code {

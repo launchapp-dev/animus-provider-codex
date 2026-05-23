@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use animus_plugin_protocol::HealthStatus;
 use animus_provider_codex::backend::CodexProviderBackend;
 use animus_provider_codex::config::CodexConfig;
-use animus_provider_protocol::{AgentRunRequest, ProviderBackend};
+use animus_provider_protocol::{
+    AgentNotification, AgentRunRequest, NotificationSink, ProviderBackend,
+};
 use animus_session_backend::{
     Result as SessionResult, SessionBackend, SessionBackendInfo, SessionBackendKind,
     SessionCapabilities, SessionEvent, SessionRequest, SessionRun, SessionStability,
@@ -269,6 +271,128 @@ async fn health_healthy_when_codex_bin_on_path() {
     std::env::set_var("PATH", original_path);
 
     assert_eq!(health.status, HealthStatus::Healthy);
+}
+
+#[tokio::test]
+async fn run_agent_streaming_emits_notifications_per_event() {
+    let events = vec![
+        SessionEvent::Started {
+            backend: "fake-codex".to_string(),
+            session_id: Some("sess-stream".to_string()),
+            pid: Some(7),
+        },
+        SessionEvent::TextDelta {
+            text: "hel".to_string(),
+        },
+        SessionEvent::Thinking {
+            text: "considering...".to_string(),
+        },
+        SessionEvent::TextDelta {
+            text: "lo".to_string(),
+        },
+        SessionEvent::ToolCall {
+            tool_name: "shell".to_string(),
+            arguments: serde_json::json!({"cmd": "ls"}),
+            server: None,
+        },
+        SessionEvent::ToolResult {
+            tool_name: "shell".to_string(),
+            output: serde_json::json!({"stdout": "a\nb"}),
+            success: true,
+        },
+        SessionEvent::Error {
+            message: "transient".to_string(),
+            recoverable: true,
+        },
+        SessionEvent::FinalText {
+            text: "hello".to_string(),
+        },
+        SessionEvent::Finished { exit_code: Some(0) },
+    ];
+    let (fake, _terminated) = FakeSession::new(events, Some("sess-stream".to_string()));
+    let backend = CodexProviderBackend::with_session(fake, CodexConfig::for_testing("codex"));
+
+    let recorded: Arc<Mutex<Vec<AgentNotification>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded_clone = recorded.clone();
+    let sink = NotificationSink::new(move |n| recorded_clone.lock().unwrap().push(n));
+
+    let response = backend
+        .run_agent_streaming(run_request(Some("gpt-5.2"), "ping"), sink)
+        .await
+        .expect("streaming run should succeed");
+
+    assert_eq!(response.output, "hello");
+    assert_eq!(response.session_id, "sess-stream");
+
+    let log = recorded.lock().unwrap().clone();
+    let kinds: Vec<&str> = log.iter().map(|n| n.method()).collect();
+    assert!(kinds.contains(&"agent/output"));
+    assert!(kinds.contains(&"agent/thinking"));
+    assert!(kinds.contains(&"agent/toolCall"));
+    assert!(kinds.contains(&"agent/toolResult"));
+    assert!(kinds.contains(&"agent/error"));
+
+    let output_count = log
+        .iter()
+        .filter(|n| matches!(n, AgentNotification::Output { .. }))
+        .count();
+    assert_eq!(output_count, 3, "expected 2 deltas + 1 final");
+
+    let final_flagged = log
+        .iter()
+        .filter(|n| matches!(n, AgentNotification::Output { is_final: true, .. }))
+        .count();
+    assert_eq!(final_flagged, 1);
+
+    for n in &log {
+        match n {
+            AgentNotification::Output { session_id, .. }
+            | AgentNotification::Thinking { session_id, .. }
+            | AgentNotification::ToolCall { session_id, .. }
+            | AgentNotification::ToolResult { session_id, .. }
+            | AgentNotification::Error { session_id, .. } => {
+                assert_eq!(session_id, "sess-stream");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn run_agent_streaming_matches_run_agent_output() {
+    let events = vec![
+        SessionEvent::Started {
+            backend: "fake-codex".to_string(),
+            session_id: Some("sess-eq".to_string()),
+            pid: None,
+        },
+        SessionEvent::TextDelta {
+            text: "foo".to_string(),
+        },
+        SessionEvent::TextDelta {
+            text: "bar".to_string(),
+        },
+        SessionEvent::Finished { exit_code: Some(0) },
+    ];
+    let (fake_a, _) = FakeSession::new(events.clone(), Some("sess-eq".to_string()));
+    let backend_a = CodexProviderBackend::with_session(fake_a, CodexConfig::for_testing("codex"));
+    let non_streaming = backend_a
+        .run_agent(run_request(Some("gpt-5.2"), "ping"))
+        .await
+        .expect("run_agent");
+
+    let (fake_b, _) = FakeSession::new(events, Some("sess-eq".to_string()));
+    let backend_b = CodexProviderBackend::with_session(fake_b, CodexConfig::for_testing("codex"));
+    let streaming = backend_b
+        .run_agent_streaming(
+            run_request(Some("gpt-5.2"), "ping"),
+            NotificationSink::noop(),
+        )
+        .await
+        .expect("run_agent_streaming");
+
+    assert_eq!(streaming.output, non_streaming.output);
+    assert_eq!(streaming.session_id, non_streaming.session_id);
+    assert_eq!(streaming.exit_code, non_streaming.exit_code);
 }
 
 #[tokio::test]
