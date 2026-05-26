@@ -1,6 +1,6 @@
 [package]
 name = "animus-provider-codex"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 license = "MIT"
 description = "OpenAI Codex CLI provider plugin for Animus"
@@ -18,10 +18,10 @@ name = "animus-provider-codex"
 path = "src/main.rs"
 
 [dependencies]
-animus-plugin-protocol   = { git = "https://github.com/launchapp-dev/animus-protocol", tag = "v0.1.11" }
-animus-provider-protocol = { git = "https://github.com/launchapp-dev/animus-protocol", tag = "v0.1.11" }
-animus-plugin-runtime    = { git = "https://github.com/launchapp-dev/animus-protocol", tag = "v0.1.11" }
-animus-session-backend   = { git = "https://github.com/launchapp-dev/animus-protocol", tag = "v0.1.11" }
+animus-plugin-protocol   = { git = "https://github.com/launchapp-dev/animus-protocol", tag = "v0.1.13" }
+animus-provider-protocol = { git = "https://github.com/launchapp-dev/animus-protocol", tag = "v0.1.13" }
+animus-plugin-runtime    = { git = "https://github.com/launchapp-dev/animus-protocol", tag = "v0.1.13" }
+animus-session-backend   = { git = "https://github.com/launchapp-dev/animus-protocol", tag = "v0.1.13" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
