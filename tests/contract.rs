@@ -25,6 +25,7 @@ struct FakeSession {
     events: Mutex<Option<Vec<SessionEvent>>>,
     session_id: Option<String>,
     terminated: Arc<Mutex<Vec<String>>>,
+    started: Arc<Mutex<Vec<SessionRequest>>>,
 }
 
 impl FakeSession {
@@ -38,6 +39,7 @@ impl FakeSession {
                 events: Mutex::new(Some(events)),
                 session_id,
                 terminated: terminated.clone(),
+                started: Arc::new(Mutex::new(Vec::new())),
             },
             terminated,
         )
@@ -88,7 +90,8 @@ impl SessionBackend for FakeSession {
         }
     }
 
-    async fn start_session(&self, _request: SessionRequest) -> SessionResult<SessionRun> {
+    async fn start_session(&self, request: SessionRequest) -> SessionResult<SessionRun> {
+        self.started.lock().unwrap().push(request);
         Ok(self.make_run())
     }
 
@@ -406,4 +409,35 @@ async fn manifest_advertises_resume_and_cancellation() {
     assert!(manifest.capabilities.streaming);
     assert!(manifest.capabilities.write_capable);
     assert!(manifest.supported_models.iter().any(|m| m == "gpt-5.2"));
+}
+
+#[tokio::test]
+async fn run_agent_passes_mcp_servers_through_to_session_request() {
+    let (fake, _terminated) = FakeSession::new(
+        vec![
+            SessionEvent::FinalText {
+                text: "done".to_string(),
+            },
+            SessionEvent::Finished { exit_code: Some(0) },
+        ],
+        Some("sess-mcp".to_string()),
+    );
+    let started = fake.started.clone();
+    let backend = CodexProviderBackend::with_session(fake, CodexConfig::for_testing("codex"));
+
+    let servers = serde_json::json!({
+        "docs": { "command": "npx", "args": ["-y", "docs-mcp"] }
+    });
+    let mut request = run_request(None, "go");
+    request.mcp_servers = Some(servers.clone());
+
+    backend
+        .run_agent(request)
+        .await
+        .expect("run_agent succeeds");
+
+    let started = started.lock().unwrap();
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].mcp_servers, Some(servers));
+    assert_eq!(started[0].mcp_endpoint, None);
 }

@@ -80,6 +80,7 @@ impl CodexProviderBackend {
             cwd: request.cwd.clone(),
             project_root: request.project_root.clone(),
             mcp_endpoint: None,
+            mcp_servers: request.mcp_servers.clone(),
             permission_mode: request.permission_mode.clone(),
             timeout_secs: request.timeout_secs,
             env_vars,
