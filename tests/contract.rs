@@ -353,7 +353,8 @@ async fn run_agent_streaming_emits_notifications_per_event() {
             | AgentNotification::Thinking { session_id, .. }
             | AgentNotification::ToolCall { session_id, .. }
             | AgentNotification::ToolResult { session_id, .. }
-            | AgentNotification::Error { session_id, .. } => {
+            | AgentNotification::Error { session_id, .. }
+            | AgentNotification::InteractionRequested { session_id, .. } => {
                 assert_eq!(session_id, "sess-stream");
             }
         }
